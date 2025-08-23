@@ -1,5 +1,5 @@
-streamlit
-openai
-PyMuPDF
-pillow
-tqdm
+streamlit==1.48.1
+openai==1.40.3
+pymupdf==1.24.9
+pillow==11.3.0
+tqdm==4.66.5
