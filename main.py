@@ -1,7 +1,7 @@
 # app.py
 # -*- coding: utf-8 -*-
 """
-Streamlit P&ID extractor with progressive memory and chat history support
+Streamlit P&ID / HAZOP Extractor with Progressive Memory & Chat History Support
 """
 
 import os
@@ -60,6 +60,25 @@ def load_user_prompts(file) -> list[str]:
                     prompts.append("\n".join(parts))
     return prompts
 
+def process_pdf(pdf_path):
+    """Check if PDF has text (HAZOP) or is scanned/diagram (P&ID)"""
+    doc = fitz.open(pdf_path)
+    text_content = ""
+    for page in doc:
+        text_content += page.get_text()
+    doc.close()
+
+    if text_content.strip():
+        return {
+            "type": "text",
+            "text": f"Here is the HAZOP document content:\n{text_content[:5000]}..."
+        }
+    else:
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"file://{os.path.abspath(pdf_path)}"}
+        }
+
 def ask_model_json(model: str, system_prompt: str, prompt_text: str, image_png_bytes: bytes = None):
     """Ask GPT with enforced JSON output"""
     content = [{"type": "text", "text": prompt_text}]
@@ -91,22 +110,34 @@ def ask_model_json(model: str, system_prompt: str, prompt_text: str, image_png_b
 
 
 # ---------------- Streamlit UI ----------------
-st.set_page_config(page_title="P&ID Extractor", layout="wide")
-st.title("🛠️ P&ID Extractor with Progressive Memory & Chat History")
+st.set_page_config(page_title="P&ID / HAZOP Extractor", layout="wide")
+st.title("🛠️ P&ID / HAZOP Extractor with Progressive Memory & Chat History")
 
-uploaded_pdf = st.file_uploader("📂 Upload your P&ID PDF", type=["pdf"])
+uploaded_pdf = st.file_uploader("📂 Upload your PDF (P&ID or HAZOP)", type=["pdf"])
 uploaded_history = st.file_uploader("📝 Upload chat_history.json", type=["json"])
 page_num = st.number_input("Page number (1-based)", min_value=1, value=1, step=1)
 zoom = st.slider("Zoom level", 1.0, 4.0, 2.5, 0.5)
 
 if uploaded_pdf and uploaded_history:
-    pdf_bytes = uploaded_pdf.read()
-    try:
-        png_bytes = render_pdf_page_to_png(pdf_bytes, page_index=page_num - 1, zoom=zoom)
-        st.image(png_bytes, caption=f"Page {page_num}", use_container_width=True)
-    except Exception as e:
-        st.error(f"❌ Could not render page: {e}")
-        st.stop()
+    # Save uploaded PDF temporarily for processing
+    temp_pdf_path = "temp_uploaded.pdf"
+    with open(temp_pdf_path, "wb") as f:
+        f.write(uploaded_pdf.read())
+
+    # Detect PDF type
+    pdf_info = process_pdf(temp_pdf_path)
+
+    # Render if diagram
+    png_bytes = None
+    if pdf_info["type"] == "image_url":
+        try:
+            with open(temp_pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+            png_bytes = render_pdf_page_to_png(pdf_bytes, page_index=page_num - 1, zoom=zoom)
+            st.image(png_bytes, caption=f"Page {page_num}", use_container_width=True)
+        except Exception as e:
+            st.error(f"❌ Could not render page: {e}")
+            st.stop()
 
     prompts = load_user_prompts(uploaded_history)
     if not prompts:
@@ -118,7 +149,7 @@ if uploaded_pdf and uploaded_history:
 
     # ---- Phase 1: progressive memory ----
     system_prompt = (
-        "You are an expert process engineer. Read the provided P&ID diagram and accumulated memory. "
+        "You are an expert process engineer. Read the provided P&ID/HAZOP document and accumulated memory. "
         "For the current user prompt, update the JSON knowledge base. "
         "Always return { 'pipelines': [...], 'instruments': [...] }. "
         "Keep consistency with previous memory."
@@ -127,8 +158,15 @@ if uploaded_pdf and uploaded_history:
     for i, prompt in enumerate(prompts, start=1):
         context = {"previous_memory": memory, "current_prompt": prompt}
         progress.progress((i-1)/len(prompts), text=f"Processing prompt {i}/{len(prompts)}...")
+
         try:
-            result = ask_model_json(MODEL_DEFAULT, system_prompt, json.dumps(context, ensure_ascii=False), png_bytes)
+            if pdf_info["type"] == "text":
+                # Pass extracted text instead of image
+                result = ask_model_json(MODEL_DEFAULT, system_prompt, json.dumps(context, ensure_ascii=False) + "\n" + pdf_info["text"])
+            else:
+                # Pass diagram as PNG
+                result = ask_model_json(MODEL_DEFAULT, system_prompt, json.dumps(context, ensure_ascii=False), png_bytes)
+
             entry = {"prompt": prompt, "reply": result}
             memory.append(entry)
 
@@ -141,14 +179,17 @@ if uploaded_pdf and uploaded_history:
     # ---- Phase 2: final consolidation ----
     if memory:
         final_prompt = (
-            "You are a process engineer. Using the P&ID diagram and full memory of prompts+replies, "
+            "You are a process engineer. Using the document and full memory of prompts+replies, "
             "create one final JSON with ALL pipelines and instruments. "
             "Output only { 'pipelines': [...], 'instruments': [...] }."
         )
         progress.progress(1.0, text="Final consolidation...")
         try:
             final_input = json.dumps(memory, ensure_ascii=False)
-            final_json = ask_model_json(MODEL_DEFAULT, final_prompt, final_input, png_bytes)
+            if pdf_info["type"] == "text":
+                final_json = ask_model_json(MODEL_DEFAULT, final_prompt, final_input + "\n" + pdf_info["text"])
+            else:
+                final_json = ask_model_json(MODEL_DEFAULT, final_prompt, final_input, png_bytes)
 
             st.success("🎉 Final consolidated JSON generated!")
             st.subheader("📊 Final Result")
@@ -160,3 +201,4 @@ if uploaded_pdf and uploaded_history:
             st.error(f"⚠️ Final step failed: {e}")
 
     progress.empty()
+
