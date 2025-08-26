@@ -1,0 +1,6 @@
+[
+    {
+        "role": "user",
+        "content": "Read the entire attached P&ID/HAZOP document first. For all later questions, use only information that appears in the document—no assumptions or inferences. If a detail is missing, output \"unknown\". When asked to extract data, return only this JSON (no extra text):\n\n{\n  \"pipelines\": [\n    { \"id\": string, \"start\": string, \"end\": string, \"instruments\": [string, ...] }\n  ],\n  \"instruments\": [\n    { \"id\": string, \"type\": string, \"boundary_box\": string, \"values\": string }\n  ]\n}\n\nRules:\n- Pipelines must have exactly: id, start, end, instruments (IDs only). Use equipment/instrument names for start/end, not coordinates.\n- Instruments must have exactly: id, type, boundary_box (\"x1,y1,x2,y2\" or \"unknown\"), values (range/state or \"unknown\").\n- Keep IDs stable. Deduplicate and merge across turns; never drop previously confirmed items unless corrected by the document.\n- If not asked to extract, only acknowledge.\n- Output only valid JSON when extraction is requested—no prose."
+    }
+]
